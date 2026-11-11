@@ -1,11 +1,44 @@
-# Test your FastAPI endpoints
+# KnowAnswer API 手工测试
 
-GET http://127.0.0.1:8000/
-Accept: application/json
+GET http://127.0.0.1:8000/api/health
+
+###
+
+POST http://127.0.0.1:8000/api/knowledge-bases
+Content-Type: application/json
+
+{"name": "default", "description": ""}
 
 ###
 
-GET http://127.0.0.1:8000/hello/User
-Accept: application/json
+GET http://127.0.0.1:8000/api/knowledge-bases
 
 ###
+
+POST http://127.0.0.1:8000/api/knowledge-bases/1/files
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="example.txt"
+Content-Type: text/plain
+
+< ./data/example.txt
+--WebAppBoundary--
+
+###
+
+GET http://127.0.0.1:8000/api/files/1
+
+###
+
+POST http://127.0.0.1:8000/api/conversations
+Content-Type: application/json
+
+{"knowledge_base_id": 1, "title": ""}
+
+###
+
+POST http://127.0.0.1:8000/api/chat/stream
+Content-Type: application/json
+
+{"conversation_id": 1, "question": "这份文档讲了什么？"}
