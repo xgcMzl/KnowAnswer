@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from know_answer.app.routes import chat, health, knowledge
 from know_answer.core.config import get_settings
@@ -74,11 +77,39 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(chat.router)
 
-    @app.get("/")
-    async def root() -> dict[str, str]:
-        return {"name": settings.app_name, "docs": "/docs", "api": "/api"}
+    if not _mount_frontend(app, settings.app_name):
+        @app.get("/")
+        async def root() -> dict[str, str]:
+            return {"name": settings.app_name, "docs": "/docs", "api": "/api"}
 
     return app
+
+
+def _mount_frontend(app: FastAPI, app_name: str) -> bool:
+    """存在 frontend/dist 时，由后端直接托管 SPA（单进程部署）。"""
+    project_root = Path(__file__).resolve().parents[3]
+    dist = (project_root / "frontend" / "dist").resolve()
+    if not dist.is_dir():
+        return False
+
+    assets = dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        if full_path.startswith("api/"):
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "NOT_FOUND", "message": f"接口不存在：/{full_path}"}},
+            )
+        candidate = (dist / full_path).resolve()
+        if full_path and candidate.is_file() and candidate.is_relative_to(dist):
+            return FileResponse(candidate)
+        return FileResponse(dist / "index.html")
+
+    logger.info("%s 将托管前端静态文件：%s", app_name, dist)
+    return True
 
 
 app = create_app()

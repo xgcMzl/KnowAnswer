@@ -41,6 +41,9 @@ def get_ingestor() -> DocumentIngestor:
                     splitter_config=SplitterConfig(
                         chunk_size=settings.chunk_size,
                         chunk_overlap=settings.chunk_overlap,
+                        enable_parent_child=settings.parent_child_enabled,
+                        parent_chunk_size=settings.parent_chunk_size,
+                        parent_chunk_overlap=settings.parent_chunk_overlap,
                     ),
                     embed_model=get_embed_model(),
                     vector_store=get_vector_store(),

@@ -57,6 +57,7 @@ Milvus Standalone/Cluster 或 Zilliz Cloud。
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from contextlib import contextmanager
@@ -119,13 +120,22 @@ class MilvusWriteError(DocumentIngestionError):
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class SplitterConfig:
-    """切割参数。``chunk_size`` / ``chunk_overlap`` 以 token 计。"""
+    """切割参数。``chunk_size`` / ``chunk_overlap`` 以 token 计。
+
+    开启 ``enable_parent_child`` 后做两级切分：父块只用于检索后回填上下文
+    （存 SQLite），子块用于向量化与 BM25 召回（存 Milvus）。
+    """
 
     chunk_size: int = 512
     chunk_overlap: int = 64
     paragraph_separator: str = "\n\n"
     # 句子级二次切分，包含中英文常用标点；用于避免单个超长句子撑爆 chunk。
     secondary_chunking_regex: str = r"[^,.;!?。！？；]+[,.;!?。！？；]?"
+
+    # 父子切片
+    enable_parent_child: bool = True
+    parent_chunk_size: int = 1024
+    parent_chunk_overlap: int = 128
 
     def validate(self) -> None:
         if self.chunk_size <= 0:
@@ -135,6 +145,27 @@ class SplitterConfig:
         if self.chunk_overlap >= self.chunk_size:
             raise ConfigurationError(
                 f"chunk_overlap（{self.chunk_overlap}）必须小于 chunk_size（{self.chunk_size}）"
+            )
+        if not self.enable_parent_child:
+            return
+        if self.parent_chunk_size <= 0:
+            raise ConfigurationError(
+                f"parent_chunk_size 必须为正整数，当前为 {self.parent_chunk_size}"
+            )
+        if self.parent_chunk_overlap < 0:
+            raise ConfigurationError(
+                f"parent_chunk_overlap 不能为负数，当前为 {self.parent_chunk_overlap}"
+            )
+        if self.parent_chunk_overlap >= self.parent_chunk_size:
+            raise ConfigurationError(
+                "parent_chunk_overlap"
+                f"（{self.parent_chunk_overlap}）必须小于 parent_chunk_size"
+                f"（{self.parent_chunk_size}）"
+            )
+        if self.parent_chunk_size < self.chunk_size:
+            raise ConfigurationError(
+                f"parent_chunk_size（{self.parent_chunk_size}）不能小于"
+                f" chunk_size（{self.chunk_size}）"
             )
 
 
@@ -288,14 +319,38 @@ class _MaterializedInput:
 
 
 @dataclass(frozen=True)
+class ParentChunkDraft:
+    """父块草稿：由切分阶段产出，交由调用方落 SQLite（不进 Milvus）。"""
+
+    parent_id: str
+    parent_index: int
+    text: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SplitOutcome:
+    """两级切分结果：子块进向量库，父块另行持久化。"""
+
+    child_nodes: list[BaseNode]
+    parent_chunks: tuple[ParentChunkDraft, ...] = ()
+
+
+@dataclass(frozen=True)
 class IngestResult:
-    """一次入库的结果，便于调用方与验证脚本断言。"""
+    """一次入库的结果，便于调用方与验证脚本断言。
+
+    ``node_count`` / ``node_ids`` 指写入 Milvus 的**子块**；父块只随
+    ``parent_chunks`` 返回，由调用方决定持久化方式。
+    """
 
     file_name: str
     file_type: FileType
     node_count: int
     node_ids: tuple[str, ...]
     collection_name: str = COLLECTION_NAME
+    parent_count: int = 0
+    parent_chunks: tuple[ParentChunkDraft, ...] = ()
 
 
 def _read_binary_input(file: FileInput) -> bytes:
@@ -471,6 +526,20 @@ def _load_documents(
     return documents
 
 
+def _resolve_file_key(
+    materialized: _MaterializedInput,
+    extra_metadata: Optional[dict[str, Any]],
+) -> str:
+    """父块 ID 前缀：业务链路优先用 ``file_id``，独立使用时退回稳定哈希。"""
+    if extra_metadata:
+        file_id = extra_metadata.get("file_id")
+        if file_id is not None:
+            return str(file_id)
+
+    seed = f"{materialized.display_name}|{materialized.source_path or ''}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
@@ -563,7 +632,11 @@ class DocumentIngestor:
                     "若为扫描版 PDF，请先做 OCR；若文件为空或损坏，请检查源文件。"
                 )
 
-            nodes = self._split(documents)
+            split = self._split(
+                documents,
+                file_key=_resolve_file_key(materialized, extra_metadata),
+            )
+            nodes = split.child_nodes
             if not nodes:
                 raise EmptyDocumentError(
                     f"文件 '{materialized.display_name}' 切分后没有有效节点。"
@@ -597,42 +670,95 @@ class DocumentIngestor:
                 node_count=len(nodes),
                 node_ids=tuple(node_ids),
                 collection_name=self._collection_name,
+                parent_count=len(split.parent_chunks),
+                parent_chunks=split.parent_chunks,
             )
 
     # ----------------------------- 内部方法 ----------------------------- #
-    def _split(self, documents: list[Document]) -> list[BaseNode]:
-        splitter = SentenceSplitter(
-            chunk_size=self._splitter_config.chunk_size,
-            chunk_overlap=self._splitter_config.chunk_overlap,
-            paragraph_separator=self._splitter_config.paragraph_separator,
-            secondary_chunking_regex=self._splitter_config.secondary_chunking_regex,
+    def _split(self, documents: list[Document], *, file_key: str) -> SplitOutcome:
+        """把文档切成「子块（进 Milvus）+ 父块（进 SQLite）」。
+
+        - 父块不跨 Document（PDF 每页独立），避免 page_label 串页。
+        - ``parent_index`` / ``chunk_index`` 均按整份文件全局递增。
+        - 关闭父子切片时退化为原来的扁平切分，``parent_chunks`` 为空。
+        """
+        splitter_config = self._splitter_config
+        child_splitter = SentenceSplitter(
+            chunk_size=splitter_config.chunk_size,
+            chunk_overlap=splitter_config.chunk_overlap,
+            paragraph_separator=splitter_config.paragraph_separator,
+            secondary_chunking_regex=splitter_config.secondary_chunking_regex,
         )
 
-        nodes: list[BaseNode] = []
+        if not splitter_config.enable_parent_child:
+            nodes: list[BaseNode] = []
+            for document in documents:
+                # 只对正文调用 split_text，chunk_size 不会因 metadata 较长而失效
+                # （get_nodes_from_documents 会把 metadata 计入 token 预算，
+                #   小 chunk_size 时会抛 "Metadata length is longer than chunk size"）。
+                for text in child_splitter.split_text(document.text):
+                    if not text.strip():
+                        continue
+                    nodes.append(self._make_node(text, document))
+            for index, node in enumerate(nodes):
+                node.metadata["chunk_index"] = index
+            return SplitOutcome(child_nodes=nodes)
+
+        parent_splitter = SentenceSplitter(
+            chunk_size=splitter_config.parent_chunk_size,
+            chunk_overlap=splitter_config.parent_chunk_overlap,
+            paragraph_separator=splitter_config.paragraph_separator,
+            secondary_chunking_regex=splitter_config.secondary_chunking_regex,
+        )
+
+        children: list[BaseNode] = []
+        parents: list[ParentChunkDraft] = []
+        parent_index = 0
+        child_index = 0
+
         for document in documents:
-            # 只对正文调用 split_text，chunk_size 不会因 metadata 较长而失效
-            # （get_nodes_from_documents 会把 metadata 计入 token 预算，
-            #   小 chunk_size 时会抛 "Metadata length is longer than chunk size"）。
-            for split in splitter.split_text(document.text):
-                if not split.strip():
+            for parent_text in parent_splitter.split_text(document.text):
+                if not parent_text.strip():
                     continue
-                nodes.append(
-                    TextNode(
-                        text=split,
-                        # 每个节点使用独立的 metadata 副本。
-                        metadata=dict(document.metadata),
-                        excluded_embed_metadata_keys=list(
-                            document.excluded_embed_metadata_keys
-                        ),
-                        excluded_llm_metadata_keys=list(
-                            document.excluded_llm_metadata_keys
-                        ),
+
+                parent_meta = dict(document.metadata)
+                parent_meta["parent_id"] = f"{file_key}:{parent_index}"
+                parent_meta["parent_index"] = parent_index
+                parents.append(
+                    ParentChunkDraft(
+                        parent_id=parent_meta["parent_id"],
+                        parent_index=parent_index,
+                        text=parent_text,
+                        metadata=parent_meta,
                     )
                 )
 
-        for index, node in enumerate(nodes):
-            node.metadata["chunk_index"] = index
-        return nodes
+                for local_index, child_text in enumerate(
+                    child_splitter.split_text(parent_text)
+                ):
+                    if not child_text.strip():
+                        continue
+                    node = self._make_node(child_text, document)
+                    node.metadata["parent_id"] = parent_meta["parent_id"]
+                    node.metadata["parent_index"] = parent_index
+                    node.metadata["child_index_in_parent"] = local_index
+                    node.metadata["chunk_index"] = child_index
+                    children.append(node)
+                    child_index += 1
+
+                parent_index += 1
+
+        return SplitOutcome(child_nodes=children, parent_chunks=tuple(parents))
+
+    @staticmethod
+    def _make_node(text: str, document: Document) -> BaseNode:
+        return TextNode(
+            text=text,
+            # 每个节点使用独立的 metadata 副本。
+            metadata=dict(document.metadata),
+            excluded_embed_metadata_keys=list(document.excluded_embed_metadata_keys),
+            excluded_llm_metadata_keys=list(document.excluded_llm_metadata_keys),
+        )
 
     def _embed_nodes(self, nodes: list[BaseNode]) -> list[list[float]]:
         embed_model = self._get_embed_model()

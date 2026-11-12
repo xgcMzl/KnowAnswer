@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     TypeDecorator,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -94,6 +95,29 @@ class KnowledgeFile(Base):
     )
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="files")
+
+
+class ParentChunk(Base):
+    """父块正文。只存 SQLite，不写入 Milvus；子块通过 ``parent_id`` 关联到这里。"""
+
+    __tablename__ = "parent_chunks"
+    __table_args__ = (
+        UniqueConstraint("file_id", "parent_index", name="uq_parent_chunks_file_index"),
+        Index("ix_parent_chunks_knowledge_base_id", "knowledge_base_id"),
+    )
+
+    parent_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_files.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 冗余字段，便于排查与后续按知识库清理；不建外键，避免多路径级联。
+    knowledge_base_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class Conversation(Base):

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select
 
 from know_answer.core.db import session_scope
+from know_answer.db import parent_store
 from know_answer.db.models import FileStatus, KnowledgeFile
 from know_answer.rag import vector_store
 from know_answer.rag.ingestion import ingest_document
@@ -43,25 +44,43 @@ def process_file(file_id: int) -> None:
             knowledge_base_id=knowledge_base_id,
             file_name=file_name,
         )
+
+        # 父块与 ready 状态放在同一事务，避免出现「父块已写但状态未就绪」。
+        with session_scope() as db:
+            parent_store.replace_for_file(
+                db,
+                file_id=file_id,
+                knowledge_base_id=knowledge_base_id,
+                drafts=result.parent_chunks,
+            )
+            row = db.get(KnowledgeFile, file_id)
+            if row is not None:
+                row.status = FileStatus.READY
+                row.chunk_count = result.node_count
+                row.error_message = None
+
+        logger.info(
+            "入库完成：file_id=%s children=%s parents=%s",
+            file_id,
+            result.node_count,
+            result.parent_count,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("文件入库失败：file_id=%s", file_id)
         try:
             vector_store.delete_by_file(file_id)
         except Exception as cleanup_exc:  # noqa: BLE001
             logger.warning("清理 file_id=%s 的残留向量失败：%s", file_id, cleanup_exc)
+        try:
+            with session_scope() as db:
+                parent_store.delete_by_file(db, file_id)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning("清理 file_id=%s 的父块失败：%s", file_id, cleanup_exc)
         with session_scope() as db:
             row = db.get(KnowledgeFile, file_id)
             if row is not None:
                 row.status = FileStatus.FAILED
                 row.error_message = str(exc)[:1000]
-        return
-
-    with session_scope() as db:
-        row = db.get(KnowledgeFile, file_id)
-        if row is not None:
-            row.status = FileStatus.READY
-            row.chunk_count = result.node_count
-            row.error_message = None
 
 
 def recover_stale_files() -> None:

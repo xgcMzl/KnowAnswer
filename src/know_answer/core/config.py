@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     milvus_uri: str = "http://106.55.165.169:19530"
     milvus_token: str = ""
-    milvus_collection: str = "knowanswer_chunks"
+    # 混合检索需要 collection 在创建时就带 BM25 内置函数；
+    # 旧的 knowanswer_chunks 没有该 schema，因此默认使用新 collection。
+    milvus_collection: str = "knowanswer_chunks_v2"
 
     # ------------------------------------------------------------------ #
     # Embedding
@@ -69,6 +71,23 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     chunk_size: int = 512
     chunk_overlap: int = 64
+
+    # 父子切片：父块只存 SQLite，子块进 Milvus
+    parent_child_enabled: bool = True
+    parent_chunk_size: int = 1024
+    parent_chunk_overlap: int = 128
+    rag_parent_max_chars: int = 1600
+
+    # 混合检索：稠密向量 + Milvus 内置 BM25，RRF 融合
+    hybrid_retrieval_enabled: bool = True
+    rag_rrf_k: int = 60
+    # Milvus 分析器类型；中文用 chinese（jieba 分词），异常时可退回 standard
+    rag_sparse_analyzer: str = "chinese"
+    # RRF 融合分的绝对量级远小于余弦相似度，阈值单独配置；0 表示不过滤
+    rag_hybrid_min_score: float = 0.0
+    # 子块召回放大系数：先多召回子块，再按 parent_id 折叠
+    rag_child_top_k_multiplier: int = 3
+
     rag_top_k: int = 6
     rag_min_score: float = 0.0
     rag_chunk_max_chars: int = 1200
