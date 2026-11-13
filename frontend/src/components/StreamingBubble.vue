@@ -1,12 +1,21 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import MarkdownContent from './MarkdownContent.vue'
 import SourcePanel from './SourcePanel.vue'
-import type { Source } from '@/types'
+import type { Intent, Source } from '@/types'
 
-defineProps<{
+const props = defineProps<{
   content: string
   sources: Source[]
+  intent: Intent | null
 }>()
+
+const statusText = computed(() => {
+  if (props.intent === 'rag') return '正在结合知识库回答…'
+  if (props.intent === 'general') return '直接回答（未使用知识库）…'
+  return '正在生成…'
+})
 </script>
 
 <template>
@@ -23,7 +32,7 @@ defineProps<{
           <span class="cursor"></span>
         </template>
       </div>
-      <div class="message-meta">正在生成…</div>
+      <div class="message-meta">{{ statusText }}</div>
     </div>
   </div>
 </template>

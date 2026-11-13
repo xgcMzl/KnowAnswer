@@ -160,6 +160,7 @@ function useSuggestion(text: string): void {
           v-if="chat.streaming"
           :content="chat.streamContent"
           :sources="chat.streamSources"
+          :intent="chat.streamIntent"
         />
       </div>
 

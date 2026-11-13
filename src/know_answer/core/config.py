@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
 
     # ------------------------------------------------------------------ #
+    # 意图识别（LangChain Tool 轻量路由）
+    # ------------------------------------------------------------------ #
+    intent_routing_enabled: bool = True
+    # auto 兼容性最好；确认端点支持后可改为 required 强制模型选择工具
+    intent_router_tool_choice: str = "auto"  # auto | required
+    intent_router_timeout_seconds: float = 5.0
+    # 只把最近若干条历史送给路由模型，控制首字延迟与 token
+    intent_router_history_messages: int = 4
+    intent_router_history_chars: int = 2000
+    # 路由模型改写后的检索 query 最大长度
+    intent_router_query_max_chars: int = 500
+    # 路由失败时的兜底意图：rag（贴近旧行为）或 general
+    intent_router_fallback_intent: str = "rag"
+
+    # ------------------------------------------------------------------ #
     # 切分与检索
     # ------------------------------------------------------------------ #
     chunk_size: int = 512

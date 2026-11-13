@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 
 import * as api from '@/api/chat'
 import { ApiError } from '@/api/http'
-import type { Conversation, Message, Source } from '@/types'
+import type { Conversation, Intent, Message, Source } from '@/types'
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([])
@@ -14,6 +14,7 @@ export const useChatStore = defineStore('chat', () => {
   const streaming = ref(false)
   const streamContent = ref('')
   const streamSources = ref<Source[]>([])
+  const streamIntent = ref<Intent | null>(null)
   const streamError = ref<string | null>(null)
 
   let controller: AbortController | null = null
@@ -100,6 +101,7 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = true
     streamContent.value = ''
     streamSources.value = []
+    streamIntent.value = null
     streamError.value = null
     controller = new AbortController()
 
@@ -111,6 +113,9 @@ export const useChatStore = defineStore('chat', () => {
           knowledge_base_id: knowledgeBaseId,
         },
         {
+          onIntent: (intent) => {
+            streamIntent.value = intent
+          },
           onSources: (sources) => {
             streamSources.value = sources
           },
@@ -143,6 +148,7 @@ export const useChatStore = defineStore('chat', () => {
       controller = null
       streamContent.value = ''
       streamSources.value = []
+      streamIntent.value = null
       try {
         await loadMessages(conversationId)
         await loadConversations()
@@ -165,6 +171,7 @@ export const useChatStore = defineStore('chat', () => {
     streaming,
     streamContent,
     streamSources,
+    streamIntent,
     streamError,
     loadConversations,
     activate,

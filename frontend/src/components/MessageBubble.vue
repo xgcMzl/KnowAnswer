@@ -36,6 +36,14 @@ async function copyContent(): Promise<void> {
       <SourcePanel v-if="isAssistant && message.sources?.length" :sources="message.sources" />
 
       <div class="message-meta">
+        <el-tag
+          v-if="isAssistant && message.sources === null"
+          size="small"
+          effect="plain"
+          type="info"
+        >
+          未使用知识库
+        </el-tag>
         <span>{{ formatTime(message.created_at) }}</span>
         <el-button
           v-if="isAssistant"

@@ -72,7 +72,11 @@ export interface ChatStreamPayload {
   knowledge_base_id?: number | null
 }
 
+/** 意图路由结果：rag=使用知识库，general=直接回答 */
+export type Intent = 'rag' | 'general'
+
 export type StreamEvent =
+  | { type: 'intent'; intent: Intent }
   | { type: 'sources'; sources: Source[] }
   | { type: 'delta'; content: string }
   | { type: 'done'; conversation_id: number; message_id: number }

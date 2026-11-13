@@ -2,6 +2,7 @@ import { API_BASE, ApiError, jsonRequest, request } from './http'
 import type {
   ChatStreamPayload,
   Conversation,
+  Intent,
   Message,
   StreamEvent,
 } from '@/types'
@@ -33,6 +34,7 @@ export function listMessages(conversationId: number): Promise<{ items: Message[]
 }
 
 export interface StreamHandlers {
+  onIntent?: (intent: Intent) => void
   onSources?: (sources: import('@/types').Source[]) => void
   onDelta?: (content: string) => void
   onDone?: (event: Extract<StreamEvent, { type: 'done' }>) => void
@@ -98,7 +100,9 @@ export async function streamChat(
           continue
         }
 
-        if (event.type === 'sources') {
+        if (event.type === 'intent') {
+          handlers.onIntent?.(event.intent)
+        } else if (event.type === 'sources') {
           handlers.onSources?.(event.sources)
         } else if (event.type === 'delta') {
           handlers.onDelta?.(event.content)

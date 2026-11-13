@@ -15,8 +15,9 @@ from starlette.concurrency import run_in_threadpool
 from know_answer.core.db import get_db
 from know_answer.core.errors import AppError
 from know_answer.rag.llm import astream_answer
-from know_answer.rag.prompt import build_messages
+from know_answer.rag.prompt import build_general_messages, build_messages
 from know_answer.rag.retrieval import retrieve
+from know_answer.rag.router import classify_intent
 from know_answer.schemas.chat import (
     ChatStreamRequest,
     ConversationCreate,
@@ -90,15 +91,30 @@ async def chat_stream(
 ) -> StreamingResponse:
     # 阶段 A：短事务中校验会话、读历史、保存 user 消息
     ctx = await run_in_threadpool(chat_service.prepare_stream, payload)
-    # 阶段 B：线程池中完成 embedding + Milvus 检索；失败时走统一 JSON 错误响应
-    sources = await run_in_threadpool(
-        retrieve, payload.question, ctx.knowledge_base_id
+
+    # 阶段 B：意图识别（非流式单次工具选择；失败时内部兜底，不抛业务异常）
+    decision = await classify_intent(
+        ctx.question,
+        ctx.history,
+        knowledge_base_id=ctx.knowledge_base_id,
     )
-    messages = build_messages(payload.question, sources, ctx.history)
+
+    sources: list[dict[str, Any]] = []
+    if decision.intent == "rag":
+        # 阶段 C：线程池中完成 embedding + Milvus 检索；失败时走统一 JSON 错误响应。
+        # 检索用模型改写后的 query（补全“它/这个”等指代），回答仍用用户原问题。
+        sources = await run_in_threadpool(
+            retrieve, decision.query or ctx.question, ctx.knowledge_base_id
+        )
+        messages = build_messages(ctx.question, sources, ctx.history)
+    else:
+        # 常规问题：不检索、不生成 sources，走通用 system prompt
+        messages = build_general_messages(ctx.question, ctx.history)
 
     async def event_stream():
         stream = astream_answer(messages)
         try:
+            yield _sse({"type": "intent", "intent": decision.intent})
             yield _sse({"type": "sources", "sources": sources})
 
             buffer: list[str] = []
@@ -118,12 +134,13 @@ async def chat_stream(
                     }
                 )
             else:
-                # 阶段 C：新开短事务保存 assistant 消息
+                # 阶段 D：新开短事务保存 assistant 消息。
+                # general 不写 sources（None），rag 保留来源列表（可能为空）。
                 message_id = await run_in_threadpool(
                     chat_service.save_assistant,
                     ctx.conversation_id,
                     content,
-                    sources,
+                    sources if decision.intent == "rag" else None,
                 )
                 yield _sse(
                     {

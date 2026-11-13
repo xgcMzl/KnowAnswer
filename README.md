@@ -9,9 +9,12 @@
 - Embedding：本地 `BAAI/bge-small-zh-v1.5`（512 维，CPU）
 - 向量库：Milvus（collection `knowanswer_chunks_v2`，按知识库/文件过滤）
 - 检索：稠密向量 + Milvus 内置 BM25 双路召回，服务端 RRF 融合
+- 意图识别：LangChain Tool 轻量路由（`bind_tools`），模型在「检索知识库」与「直接回答」间二选一，常规问题跳过 RAG
 - 元数据：SQLite + SQLAlchemy
 
 > 不含登录鉴权，默认只应监听 `127.0.0.1`。
+
+架构与实现细节见 [`doc/knowanswer_architecture.md`](doc/knowanswer_architecture.md)。
 
 ## 快速开始
 
@@ -65,6 +68,9 @@ npm run build
 | `HYBRID_RETRIEVAL_ENABLED` | 混合检索开关，默认 `true` |
 | `RAG_RRF_K` / `RAG_SPARSE_ANALYZER` | RRF 参数（默认 60）与 BM25 分词器（默认 `chinese`） |
 | `RAG_TOP_K` | 最终来源条数，默认 6 |
+| `INTENT_ROUTING_ENABLED` | 意图识别开关，默认 `true`；关闭后所有问题都走知识库检索 |
+| `INTENT_ROUTER_TOOL_CHOICE` | 工具选择策略，默认 `auto`；端点支持时可改 `required` |
+| `INTENT_ROUTER_FALLBACK_INTENT` | 路由失败时的兜底意图，默认 `rag` |
 | `DATABASE_URL` | 默认 `sqlite:///./data/knowanswer.db` |
 
 ## API 概览

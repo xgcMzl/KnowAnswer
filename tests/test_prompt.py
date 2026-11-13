@@ -1,4 +1,4 @@
-from know_answer.rag.prompt import build_messages
+from know_answer.rag.prompt import build_general_messages, build_messages
 
 
 def test_prompt_contains_sources_and_history() -> None:
@@ -28,3 +28,15 @@ def test_prompt_contains_sources_and_history() -> None:
 def test_prompt_without_sources() -> None:
     messages = build_messages("你好", [], None)
     assert "本轮未检索到知识库内容" in messages[0]["content"]
+
+
+def test_general_prompt_has_no_kb_context() -> None:
+    history = [{"role": "user", "content": "之前的问题"}]
+
+    messages = build_general_messages("你好", history)
+
+    assert messages[0]["role"] == "system"
+    assert "【知识库上下文】" not in messages[0]["content"]
+    assert "知识库" in messages[0]["content"]  # 明确禁止提及
+    assert messages[1] == {"role": "user", "content": "之前的问题"}
+    assert messages[-1] == {"role": "user", "content": "你好"}
