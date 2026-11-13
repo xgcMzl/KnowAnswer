@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Milvus
     # ------------------------------------------------------------------ #
-    milvus_uri: str = "http://106.55.165.169:19530"
+    milvus_uri: str = ""
     milvus_token: str = ""
     # 混合检索需要 collection 在创建时就带 BM25 内置函数；
     # 旧的 knowanswer_chunks 没有该 schema，因此默认使用新 collection。
